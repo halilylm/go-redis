@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"go-redis/models"
 	"log"
 	"net/http"
@@ -35,7 +36,7 @@ func (h *Handler) NewPost(c echo.Context) error {
 
 func (h *Handler) FetchPosts(c echo.Context) error {
 	userID := userIDFromToken(c)
-	log.Println(userID)
+	key := fmt.Sprintf("tweets_%s", userID)
 	page, _ := strconv.Atoi(c.QueryParam("page"))
 	limit, _ := strconv.Atoi(c.QueryParam("limit"))
 	if page < 1 {
@@ -47,8 +48,28 @@ func (h *Handler) FetchPosts(c echo.Context) error {
 	db := h.DB.Clone()
 	defer db.Close()
 	var posts []models.Post
-	if err := db.DB("twitter").C("posts").Find(bson.M{}).Skip((page - 1) * limit).Limit(limit).All(&posts); err != nil {
-		return c.JSON(http.StatusNotFound, "nth here")
+	values, err := h.Rdb.Get(context.Background(), key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			log.Println("mongodb working")
+			if err := db.DB("twitter").C("posts").Find(bson.M{"to": userID}).Skip((page - 1) * limit).Limit(limit).All(&posts); err != nil {
+				return c.JSON(http.StatusNotFound, "nth here")
+			}
+			jsoned, err := json.Marshal(posts)
+			if err != nil {
+				log.Fatalln("an error occured")
+			}
+			if len(posts) > 0 {
+				h.Rdb.Set(context.Background(), key, string(jsoned), time.Minute)
+			}
+		} else {
+			log.Fatalln(err)
+		}
+	} else {
+		log.Println("it is from redis")
+		if err := json.Unmarshal([]byte(values), &posts); err != nil {
+			log.Fatalln(err)
+		}
 	}
 	return c.JSON(http.StatusOK, posts)
 }

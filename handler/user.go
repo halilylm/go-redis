@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/mgo.v2"
@@ -27,6 +28,7 @@ func (h *Handler) SignUp(c echo.Context) error {
 		log.Fatalln(err)
 	}
 	user.Password = string(hashedPassword)
+	user.Uuid = uuid.New()
 	db := h.DB.Clone()
 	defer db.Close()
 	if err := db.DB("twitter").C("users").Insert(user); err != nil {
