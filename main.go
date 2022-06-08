@@ -7,19 +7,24 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis_rate/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/labstack/gommon/log"
 	"gopkg.in/mgo.v2"
 )
 
+var limiter *redis_rate.Limiter
+
 func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
+	limiter = redis_rate.NewLimiter(rdb)
 	e := echo.New()
 	e.Logger.SetLevel(log.ERROR)
 	e.Use(middleware.Logger())
@@ -36,6 +41,7 @@ func main() {
 			return false
 		},
 	}))
+	e.Use(rateLimiting)
 	db, err := mgo.Dial("localhost")
 	if err != nil {
 		e.Logger.Fatal(err)
@@ -74,5 +80,29 @@ func main() {
 	defer cancel()
 	if err := e.Shutdown(ctx); err != nil {
 		fmt.Println("couldnt shut down the server...")
+	}
+}
+
+func rateLimiting(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		res, err := limiter.Allow(c.Request().Context(), "project:123", redis_rate.PerMinute(10))
+		if err != nil {
+			return err
+		}
+		h := c.Response().Header()
+		h.Set("RateLimit-Remaining", strconv.Itoa(res.Remaining))
+		log.Printf("Remaining %d", res.Remaining)
+		if res.Allowed == 0 {
+			// We are rate limited.
+
+			seconds := int(res.RetryAfter / time.Second)
+			h.Set("RateLimit-RetryAfter", strconv.Itoa(seconds))
+
+			// Stop processing and return the error.
+			return c.JSON(http.StatusTooManyRequests, "Rate limit exceeded")
+		}
+
+		// Continue processing as normal.
+		return next(c)
 	}
 }
